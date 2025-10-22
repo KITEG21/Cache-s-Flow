@@ -13,23 +13,124 @@ interface StepMessage {
 }
 
 const DirectMappedCache = () => {
+  // Store the actual 2^x values that user will edit
+  const [blockSize, setBlockSize] = useState(4);        // 2^w palabras por bloque
+  const [numLines, setNumLines] = useState(8);          // 2^r líneas en caché
+  const [totalBlocks, setTotalBlocks] = useState(512);  // 2^s bloques en memoria
+  const [showConfig, setShowConfig] = useState(false);
+  
+  // Calculate w, r, s from the 2^x values
+  const w = Math.log2(blockSize);           // word offset bits
+  const r = Math.log2(numLines);            // index bits (parte de s)
+  const s = Math.log2(totalBlocks);         // bits para identificar el bloque
+  
+  // Calculated values
+  const BLOCK_SIZE = blockSize;
+  const NUM_LINES = numLines;
+  const TOTAL_BLOCKS = totalBlocks;
+  const ADDRESS_BITS = s + w;               // Total bits: s + w
+  const TAG_BITS = s - r;                   // Tag bits: s - r
+  const INDEX_BITS = r;                     // Index bits: r (parte de s)
+  const WORD_BITS = w;                      // Word offset bits: w
+  
   const [address, setAddress] = useState('');
   const [currentStep, setCurrentStep] = useState(0);
   const [steps, setSteps] = useState<StepMessage[]>([]);
   const [isSimulating, setIsSimulating] = useState(false);
-  const [cacheLines, setCacheLines] = useState<CacheLine[]>([
-    { valid: false, tag: '0000', data: ['00', '01', '10', '11'] },
-    { valid: true, tag: '1011', data: ['AA', 'BB', 'CC', 'DD'] },
-    { valid: false, tag: '0000', data: ['00', '00', '00', '00'] },
-    { valid: false, tag: '0000', data: ['00', '00', '00', '00'] },
-  ]);
+  
+  // Initialize cache lines based on NUM_LINES
+  const initializeCacheLines = (): CacheLine[] => {
+  const lines: CacheLine[] = [];
+  const tagLength = TAG_BITS;
+
+  for (let i = 0; i < NUM_LINES; i++) {
+    const randomTag = Array(tagLength)
+      .fill(0)
+      .map(() => Math.random() > 0.5 ? '1' : '0') // Genera un tag aleatorio
+      .join('');
+
+    const randomData = Array(BLOCK_SIZE)
+      .fill(0)
+      .map(() => String.fromCharCode(65 + Math.floor(Math.random() * 26)) + Math.floor(Math.random() * 10)); // Genera datos aleatorios
+
+    lines.push({
+      valid: Math.random() > 0, // 70% de probabilidad de que sea válido
+      tag: randomTag,
+      data: randomData,
+    });
+  }
+  return lines;
+};
+  
+  const [cacheLines, setCacheLines] = useState<CacheLine[]>(initializeCacheLines());
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
   const [parsedAddress, setParsedAddress] = useState({ tag: '', line: '', word: '' });
   const [isHit, setIsHit] = useState<boolean | null>(null);
+  
+  // Helper function to check if a number is a power of 2
+  const isPowerOf2 = (n: number) => n > 0 && (n & (n - 1)) === 0;
+  
+  // Update cache when configuration changes
+  const handleConfigUpdate = () => {
+    // Validate that all values are powers of 2
+    if (!isPowerOf2(blockSize)) {
+      alert('Palabras por bloque debe ser potencia de 2 (2, 4, 8, 16)');
+      return;
+    }
+    if (!isPowerOf2(numLines)) {
+      alert('Número de líneas debe ser potencia de 2 (2, 4, 8, ..., 256)');
+      return;
+    }
+    if (!isPowerOf2(totalBlocks)) {
+      alert('Total de bloques debe ser potencia de 2');
+      return;
+    }
+    
+    // Calculate w, r, s
+    const calcW = Math.log2(blockSize);
+    const calcR = Math.log2(numLines);
+    const calcS = Math.log2(totalBlocks);
+    
+    // Validate ranges
+    if (calcW < 1 || calcW > 4) {
+      alert('Palabras por bloque debe estar entre 2 y 16 (2^1 a 2^4)');
+      return;
+    }
+    if (calcR < 1 || calcR > 8) {
+      alert('Número de líneas debe estar entre 2 y 256 (2^1 a 2^8)');
+      return;
+    }
+    if (calcS < calcR) {
+      alert('Total de bloques (2^s) debe ser >= número de líneas (2^r)');
+      return;
+    }
+    if (calcS < 1 || calcS > 16) {
+      alert('Total de bloques debe estar entre 2 y 65536 (2^1 a 2^16)');
+      return;
+    }
+    if (calcS + calcW > 20) {
+      alert('La dirección total (s+w) no debe exceder 20 bits');
+      return;
+    }
+    
+    // Reset simulation
+    setIsSimulating(false);
+    setCurrentStep(0);
+    setSteps([]);
+    setSelectedLine(null);
+    setIsHit(null);
+    setAddress('');
+    setParsedAddress({ tag: '', line: '', word: '' });
+    
+    // Reinitialize cache lines
+    setCacheLines(initializeCacheLines());
+    setShowConfig(false);
+  };
 
   const simulateAccess = () => {
-    if (address.length < 6) {
-      alert('La dirección debe tener al menos 6 bits');
+    // Validate address length
+    if (address.length !== ADDRESS_BITS) {
+      alert(`La dirección debe tener exactamente ${ADDRESS_BITS} bits`);
       return;
     }
 
@@ -38,14 +139,24 @@ const DirectMappedCache = () => {
     setSelectedLine(null);
     setIsHit(null);
 
-    // Parsear dirección (ejemplo: 4 bits tag, 2 bits line, 2 bits word)
-    const tagBits = address.slice(0, address.length - 4);
-    const lineBits = address.slice(address.length - 4, address.length - 2);
-    const wordBits = address.slice(address.length - 2);
+    // Parse address based on cache configuration
+    // Format: [TAG | INDEX | WORD]
+    let bitPosition = 0;
+    
+    // Extract TAG bits
+    const tagBits = address.slice(bitPosition, bitPosition + TAG_BITS);
+    bitPosition += TAG_BITS;
+    
+    // Extract INDEX bits
+    const indexBits = address.slice(bitPosition, bitPosition + INDEX_BITS);
+    bitPosition += INDEX_BITS;
+    
+    // Extract WORD bits
+    const wordBits = address.slice(bitPosition, bitPosition + WORD_BITS);
 
-    setParsedAddress({ tag: tagBits, line: lineBits, word: wordBits });
+    setParsedAddress({ tag: tagBits, line: indexBits, word: wordBits });
 
-    const lineIndex = parseInt(lineBits, 2);
+    const lineIndex = parseInt(indexBits, 2);
     const cacheLine = cacheLines[lineIndex];
 
     const stepsArray: StepMessage[] = [];
@@ -53,21 +164,21 @@ const DirectMappedCache = () => {
     // Paso 1: Dirección recibida
     stepsArray.push({
       title: '1. Dirección de Memoria Recibida',
-      description: `La CPU solicita acceso a la dirección: ${address}. Se divide en componentes para el mapeo directo.`,
+      description: `La CPU solicita acceso a la dirección de ${ADDRESS_BITS} bits: ${address}. Se divide en componentes según el diseño de la caché.`,
       type: 'info',
     });
 
     // Paso 2: Decodificación
     stepsArray.push({
       title: '2. Decodificación de la Dirección',
-      description: `Tag: ${tagBits} (${parseInt(tagBits, 2)}), Línea: ${lineBits} (L${lineIndex}), Word: ${wordBits} (pos ${parseInt(wordBits, 2)})`,
+      description: `Tag: ${tagBits} (${TAG_BITS} bits = ${parseInt(tagBits, 2)}), Índice: ${indexBits} (${INDEX_BITS} bits = L${lineIndex}), Word: ${wordBits} (${WORD_BITS} bits = pos ${parseInt(wordBits, 2)})`,
       type: 'info',
     });
 
     // Paso 3: Selección de línea
     stepsArray.push({
       title: '3. Selección de Línea',
-      description: `Los bits de línea (${lineBits}) seleccionan directamente la línea L${lineIndex} de la caché. En mapeo directo, cada dirección se mapea a UNA única línea.`,
+      description: `Los ${INDEX_BITS} bits de índice (${indexBits}) seleccionan directamente la línea L${lineIndex} de las ${NUM_LINES} líneas de caché. En mapeo directo, cada dirección se mapea a UNA única línea.`,
       type: 'warning',
     });
 
@@ -182,6 +293,136 @@ const DirectMappedCache = () => {
         <h2 className="text-2xl font-bold mb-4 uppercase tracking-wide" style={{ color: '#ffd700' }}>
           Caché de Mapeo Directo
         </h2>
+        
+        {/* Cache Configuration Info */}
+        <div className="mb-4 p-3 rounded-lg" style={{ background: '#1a1a1a', border: '2px solid #2a2a2a' }}>
+          <div className="flex justify-between items-center mb-2">
+            <h3 className="text-sm font-bold uppercase tracking-wide" style={{ color: '#ffd700' }}>
+              Configuración de la Caché
+            </h3>
+            <button
+              onClick={() => setShowConfig(!showConfig)}
+              className="px-3 py-1 rounded text-xs uppercase tracking-wide transition-all"
+              style={{
+                background: '#ffd700',
+                color: '#000',
+                border: '2px solid #ffd700'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = '#ff8c00';
+                e.currentTarget.style.borderColor = '#ff8c00';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = '#ffd700';
+                e.currentTarget.style.borderColor = '#ffd700';
+              }}
+            >
+              {showConfig ? '✓ Guardar' : '⚙ Editar'}
+            </button>
+          </div>
+          
+          {!showConfig ? (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs mb-2">
+                <div>
+                  <span style={{ color: '#a0a0a0' }}>2<sup>w</sup> (Palabras/Bloque): </span>
+                  <span style={{ color: '#fff' }} className="font-mono font-bold">{BLOCK_SIZE}</span>
+                  <span style={{ color: '#666' }} className="ml-1">(w={w})</span>
+                </div>
+                <div>
+                  <span style={{ color: '#a0a0a0' }}>2<sup>r</sup> (Líneas): </span>
+                  <span style={{ color: '#fff' }} className="font-mono font-bold">{NUM_LINES}</span>
+                  <span style={{ color: '#666' }} className="ml-1">(r={r})</span>
+                </div>
+                <div>
+                  <span style={{ color: '#a0a0a0' }}>2<sup>s</sup> (Bloques Mem): </span>
+                  <span style={{ color: '#fff' }} className="font-mono font-bold">{TOTAL_BLOCKS}</span>
+                  <span style={{ color: '#666' }} className="ml-1">(s={s})</span>
+                </div>
+              </div>
+              <div className="mt-2 pt-2 border-t" style={{ borderColor: '#2a2a2a' }}>
+                <div className="text-xs">
+                  <span style={{ color: '#a0a0a0' }}>Dirección ({ADDRESS_BITS} bits = s+w): </span>
+                  <span style={{ color: '#ef4444' }} className="font-mono">Tag({TAG_BITS}b=s-r)</span>
+                  <span style={{ color: '#666' }}> | </span>
+                  <span style={{ color: '#10b981' }} className="font-mono">Index({INDEX_BITS}b=r)</span>
+                  <span style={{ color: '#666' }}> | </span>
+                  <span style={{ color: '#ffd700' }} className="font-mono">Word({WORD_BITS}b=w)</span>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="space-y-3">
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="text-xs" style={{ color: '#ffd700' }}>Palabras/Bloque</label>
+                  <input
+                    type="number"
+                    min="2"
+                    max="16"
+                    value={blockSize}
+                    onChange={(e) => setBlockSize(parseInt(e.target.value) || 2)}
+                    className="w-full px-2 py-1 rounded text-sm font-mono"
+                    style={{ background: '#2a2a2a', color: '#fff', border: '1px solid #ffd700' }}
+                  />
+                  <p className="text-xs mt-1" style={{ color: '#666' }}>2<sup>{w}</sup> = {BLOCK_SIZE} (w={w})</p>
+                </div>
+                <div>
+                  <label className="text-xs" style={{ color: '#10b981' }}>Líneas en Caché</label>
+                  <input
+                    type="number"
+                    min="2"
+                    max="256"
+                    value={numLines}
+                    onChange={(e) => setNumLines(parseInt(e.target.value) || 2)}
+                    className="w-full px-2 py-1 rounded text-sm font-mono"
+                    style={{ background: '#2a2a2a', color: '#fff', border: '1px solid #10b981' }}
+                  />
+                  <p className="text-xs mt-1" style={{ color: '#666' }}>2<sup>{r}</sup> = {NUM_LINES} (r={r})</p>
+                </div>
+                <div>
+                  <label className="text-xs" style={{ color: '#ef4444' }}>Total Bloques Mem</label>
+                  <input
+                    type="number"
+                    min="2"
+                    max="65536"
+                    value={totalBlocks}
+                    onChange={(e) => setTotalBlocks(parseInt(e.target.value) || 2)}
+                    className="w-full px-2 py-1 rounded text-sm font-mono"
+                    style={{ background: '#2a2a2a', color: '#fff', border: '1px solid #ef4444' }}
+                  />
+                  <p className="text-xs mt-1" style={{ color: '#666' }}>2<sup>{s}</sup> = {TOTAL_BLOCKS} (s={s})</p>
+                </div>
+              </div>
+              <div className="text-xs p-2 rounded" style={{ background: '#2a2a2a', color: '#a0a0a0' }}>
+                <strong style={{ color: '#ffd700' }}>Fórmulas:</strong><br/>
+                • Dirección total = s + w = {ADDRESS_BITS} bits<br/>
+                • Tag bits = s - r = {TAG_BITS} (etiqueta)<br/>
+                • Index bits = r = {INDEX_BITS} (línea, parte de s)<br/>
+                • Word offset = w = {WORD_BITS} (palabra)<br/>
+                • 2<sup>r</sup> = {NUM_LINES} líneas | 2<sup>s</sup> = {TOTAL_BLOCKS} bloques
+              </div>
+              <button
+                onClick={handleConfigUpdate}
+                className="w-full px-4 py-2 rounded uppercase tracking-wide font-bold"
+                style={{
+                  background: '#10b981',
+                  color: '#fff',
+                  border: '2px solid #10b981'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = '#059669';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = '#10b981';
+                }}
+              >
+                Aplicar Configuración
+              </button>
+            </div>
+          )}
+        </div>
+        
         <p className="mb-4" style={{ color: '#a0a0a0' }}>
           Cada bloque de memoria se mapea a exactamente UNA línea de la caché.
           Línea = (Dirección) mod (Número de líneas)
@@ -191,7 +432,7 @@ const DirectMappedCache = () => {
         <div className="flex gap-4 mb-6">
           <input
             type="text"
-            placeholder="Ingrese dirección binaria (ej: 10110110)"
+            placeholder={`Ingrese dirección binaria de ${ADDRESS_BITS} bits`}
             value={address}
             onChange={(e) => setAddress(e.target.value.replace(/[^01]/g, ''))}
             className="flex-1 px-4 py-2 rounded-lg font-mono focus:outline-none transition-all"
@@ -212,24 +453,24 @@ const DirectMappedCache = () => {
           />
           <button
             onClick={simulateAccess}
-            disabled={isSimulating || address.length < 6}
+            disabled={isSimulating || address.length !== ADDRESS_BITS}
             className="px-6 py-2 rounded-lg uppercase tracking-wide font-bold transition-all"
             style={{
-              background: isSimulating || address.length < 6 ? '#2a2a2a' : '#ffd700',
-              color: isSimulating || address.length < 6 ? '#666666' : '#0a0a0a',
+              background: isSimulating || address.length !== ADDRESS_BITS ? '#2a2a2a' : '#ffd700',
+              color: isSimulating || address.length !== ADDRESS_BITS ? '#666666' : '#0a0a0a',
               border: '2px solid',
-              borderColor: isSimulating || address.length < 6 ? '#2a2a2a' : '#ffd700',
-              cursor: isSimulating || address.length < 6 ? 'not-allowed' : 'pointer'
+              borderColor: isSimulating || address.length !== ADDRESS_BITS ? '#2a2a2a' : '#ffd700',
+              cursor: isSimulating || address.length !== ADDRESS_BITS ? 'not-allowed' : 'pointer'
             }}
             onMouseEnter={(e) => {
-              if (!isSimulating && address.length >= 6) {
+              if (!isSimulating && address.length === ADDRESS_BITS) {
                 e.currentTarget.style.background = '#ff8c00';
                 e.currentTarget.style.borderColor = '#ff8c00';
                 e.currentTarget.style.boxShadow = '0 0 20px rgba(255, 215, 0, 0.4)';
               }
             }}
             onMouseLeave={(e) => {
-              if (!isSimulating && address.length >= 6) {
+              if (!isSimulating && address.length === ADDRESS_BITS) {
                 e.currentTarget.style.background = '#ffd700';
                 e.currentTarget.style.borderColor = '#ffd700';
                 e.currentTarget.style.boxShadow = 'none';
@@ -242,26 +483,26 @@ const DirectMappedCache = () => {
 
         {/* Dirección parseada */}
         {isSimulating && parsedAddress.tag && (
-          <div className="flex gap-2 mb-4 justify-center">
+          <div className="flex gap-2 mb-4 justify-center flex-wrap">
             <div className="px-4 py-2 rounded" style={{
               background: 'rgba(239, 68, 68, 0.2)',
               border: '2px solid #ef4444'
             }}>
-              <p className="text-xs font-semibold" style={{ color: '#ef4444' }}>Tag</p>
+              <p className="text-xs font-semibold" style={{ color: '#ef4444' }}>Tag ({TAG_BITS} bits)</p>
               <p className="font-mono text-lg" style={{ color: '#ffffff' }}>{parsedAddress.tag}</p>
             </div>
             <div className="px-4 py-2 rounded" style={{
               background: 'rgba(16, 185, 129, 0.2)',
               border: '2px solid #10b981'
             }}>
-              <p className="text-xs font-semibold" style={{ color: '#10b981' }}>Línea</p>
+              <p className="text-xs font-semibold" style={{ color: '#10b981' }}>Index ({INDEX_BITS} bits)</p>
               <p className="font-mono text-lg" style={{ color: '#ffffff' }}>{parsedAddress.line}</p>
             </div>
             <div className="px-4 py-2 rounded" style={{
               background: 'rgba(255, 215, 0, 0.2)',
               border: '2px solid #ffd700'
             }}>
-              <p className="text-xs font-semibold" style={{ color: '#ffd700' }}>Word</p>
+              <p className="text-xs font-semibold" style={{ color: '#ffd700' }}>Word ({WORD_BITS} bits)</p>
               <p className="font-mono text-lg" style={{ color: '#ffffff' }}>{parsedAddress.word}</p>
             </div>
           </div>
